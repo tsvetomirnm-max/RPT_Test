@@ -1,7 +1,6 @@
 from flask import Flask, Response, make_response
 from datetime import datetime
 import random
-import json
 
 app = Flask(__name__)
 
@@ -12,7 +11,6 @@ latest_ts = None
 def no_cache_html(html: str) -> Response:
     resp = make_response(html)
     resp.headers["Content-Type"] = "text/html; charset=utf-8"
-    # keep SAC/iframe from caching aggressively
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
     return resp
@@ -23,7 +21,7 @@ def health():
     return Response("OK", mimetype="text/plain")
 
 
-# Called internally by the iframe (same origin) after receiving a postMessage from SAC
+# Called by the iframe (same origin) after receiving a postMessage from SAC
 @app.get("/trigger")
 def trigger():
     global latest, latest_ts
@@ -37,11 +35,6 @@ def trigger():
 def result_page():
     value = "—" if latest is None else str(latest)
     ts = "—" if latest_ts is None else latest_ts
-
-    # OPTIONAL: lock down which parent origins may send messages to this iframe.
-    # Fill in your SAC tenant host (e.g., "https://mytenant.eu10.sapanalytics.cloud")
-    # or leave the list empty to skip the check.
-    allowed_parents = []  # e.g., ["https://<your-sac-tenant-host>"]
 
     html = f"""<!doctype html>
 <html>
@@ -68,39 +61,38 @@ def result_page():
     <div class="card">
       <div class="num">{value}</div>
       <div class="meta">Updated: {ts}</div>
-      <div class="hint">This iframe listens for <code>postMessage</code> {{cmd:"trigger"}} from SAC.</div>
+      <div class="hint">Iframe listens for postMessage "trigger" (or '{{"cmd":"trigger"}}').</div>
     </div>
 
     <script>
-      // If you set allowed_parents in Python, it will appear below as JSON:
-      const ALLOWED_PARENTS = {json.dumps(allowed_parents)};
-
-      function safeParse(data) {{
-        try {{
-          return (typeof data === "string") ? JSON.parse(data) : data;
-        }} catch (e) {{
-          return null;
+      function getCmd(data) {{
+        if (typeof data === "string") {{
+          const trimmed = data.trim();
+          if (trimmed === "trigger") return "trigger";
+          try {{
+            const obj = JSON.parse(trimmed);
+            return obj && obj.cmd;
+          }} catch (e) {{
+            return null;
+          }}
         }}
+        return null;
       }}
 
       window.addEventListener("message", async (event) => {{
-        // Optional strict origin check (uncomment to enforce):
-        // if (ALLOWED_PARENTS.length > 0 && !ALLOWED_PARENTS.includes(event.origin)) return;
+        // Optional: enforce event.origin === "https://<your-sac-tenant-host>"
+        const cmd = getCmd(event.data);
+        if (cmd !== "trigger") return;
 
-        const msg = safeParse(event.data);
-        if (!msg || typeof msg !== "object") return;
-
-        if (msg.cmd === "trigger") {{
-          try {{
-            // Same-origin call to kick the calculation
-            await fetch("/trigger", {{ method: "GET", cache: "no-store" }});
-            // Reload this page to show the new value (cache-busted)
-            const url = new URL(window.location.href);
-            url.searchParams.set("cb", Date.now().toString());
-            window.location.replace(url.toString());
-          }} catch (err) {{
-            console.error("Trigger failed", err);
-          }}
+        try {{
+          // Same-origin call to kick the calculation
+          await fetch("/trigger", {{ method: "GET", cache: "no-store" }});
+          // Reload this page to show the new value (cache-busted)
+          const url = new URL(window.location.href);
+          url.searchParams.set("cb", Date.now().toString());
+          window.location.replace(url.toString());
+        }} catch (err) {{
+          console.error("Trigger failed", err);
         }}
       }});
     </script>
