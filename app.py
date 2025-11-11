@@ -1,6 +1,7 @@
 from flask import Flask, Response, make_response
 from datetime import datetime
 import random
+import html
 
 app = Flask(__name__)
 
@@ -8,8 +9,8 @@ latest = None
 latest_ts = None
 
 
-def no_cache_html(html: str) -> Response:
-    resp = make_response(html)
+def no_cache_html(html_text: str) -> Response:
+    resp = make_response(html_text)
     resp.headers["Content-Type"] = "text/html; charset=utf-8"
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
@@ -36,7 +37,15 @@ def result_page():
     value = "—" if latest is None else str(latest)
     ts = "—" if latest_ts is None else latest_ts
 
-    html = f"""<!doctype html>
+    # IMPORTANT: set this to your exact SAC tenant origin.
+    # Example: "https://mytenant.eu10.sapanalytics.cloud"
+    sac_origin = "https://<YOUR-SAC-TENANT-ORIGIN>"
+
+    # Escape content for safe embedding in HTML
+    value_js = html.escape(value)
+    ts_js = html.escape(ts)
+
+    html_page = f"""<!doctype html>
 <html>
   <head>
     <meta charset="utf-8"/>
@@ -59,12 +68,16 @@ def result_page():
   </head>
   <body>
     <div class="card">
-      <div class="num">{value}</div>
-      <div class="meta">Updated: {ts}</div>
-      <div class="hint">Iframe listens for postMessage "trigger" (or '{{"cmd":"trigger"}}').</div>
+      <div class="num" id="val">{value_js}</div>
+      <div class="meta" id="ts">Updated: {ts_js}</div>
+      <div class="hint">
+        Iframe accepts postMessage "trigger" (or '{{"cmd":"trigger"}}') from SAC
+        and posts back the currently displayed number to SAC.
+      </div>
     </div>
 
     <script>
+      // ========= helpers =========
       function getCmd(data) {{
         if (typeof data === "string") {{
           const trimmed = data.trim();
@@ -72,20 +85,43 @@ def result_page():
           try {{
             const obj = JSON.parse(trimmed);
             return obj && obj.cmd;
-          }} catch (e) {{
+          }} catch(e) {{
             return null;
           }}
         }}
         return null;
       }}
 
-      window.addEventListener("message", async (event) => {{
-        // Optional: enforce event.origin === "https://<your-sac-tenant-host>"
-        const cmd = getCmd(event.data);
-        if (cmd !== "trigger") return;
-
+      function postValueToSAC() {{
+        // send the exact value currently displayed
+        var val = document.getElementById("val").textContent.trim();
+        var ts = document.getElementById("ts").textContent.replace(/^Updated:\\s*/,'').trim();
+        // Keep payload a string as per SAC API; using JSON string literal
+        var message = JSON.stringify({{ cmd: "value", value: val, updated: ts }});
         try {{
-          // Same-origin call to kick the calculation
+          // Post to SAC parent window
+          window.parent.postMessage(message, "{sac_origin}");
+        }} catch(e) {{
+          console.error("postMessage to SAC failed", e);
+        }}
+      }}
+
+      // ========= receive from SAC (host) =========
+      window.addEventListener("message", async (event) => {{
+        // Optional strict origin check:
+        // if (event.origin !== "{sac_origin}") return;
+
+        const cmd = getCmd(event.data);
+        if (cmd !== "trigger" && cmd !== "request") return;
+
+        if (cmd === "request") {{
+          // SAC is asking for the current value without changing it
+          postValueToSAC();
+          return;
+        }}
+
+        // cmd === "trigger": kick calc, then reload and post new value
+        try {{
           await fetch("/trigger", {{ method: "GET", cache: "no-store" }});
           // Reload this page to show the new value (cache-busted)
           const url = new URL(window.location.href);
@@ -95,10 +131,16 @@ def result_page():
           console.error("Trigger failed", err);
         }}
       }});
+
+      // ========= send to SAC on load =========
+      // Always tell SAC what value we display right now (no change to existing flow)
+      window.addEventListener("DOMContentLoaded", () => {{
+        postValueToSAC();
+      }});
     </script>
   </body>
 </html>"""
-    return no_cache_html(html)
+    return no_cache_html(html_page)
 
 
 # Optional plain integer endpoint (for quick checks)
