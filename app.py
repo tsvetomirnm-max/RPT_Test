@@ -39,7 +39,7 @@ def result_page():
 
     # IMPORTANT: set this to your exact SAC tenant origin.
     # Example: "https://mytenant.eu10.sapanalytics.cloud"
-    sac_origin = "https://<YOUR-SAC-TENANT-ORIGIN>"
+    sac_origin = "https://dahlbeer.eu10.hcs.cloud.sap/>"
 
     # Escape content for safe embedding in HTML
     value_js = html.escape(value)
